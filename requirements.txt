@@ -1,0 +1,8 @@
+aiogram
+feedparser
+httpx
+lxml
+python-dotenv
+requests
+beautifulsoup4
+newspaper3k 
