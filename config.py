@@ -15,6 +15,6 @@ RSS_FEED_PRIORITIES = [
 CHECK_INTERVAL = 60  # секунд (начальный)
 MIN_POST_INTERVAL = 600  # 10 минут
 MAX_POST_INTERVAL = 7200  # 2 часа
-DB_PATH = "articles.db"
+DB_PATH = os.getenv("DB_PATH", "articles.db")
 MODEL = "deepseek/deepseek-chat-v3-0324:free"
 PROMPT_STYLE = "Стиль максимально простой и приближённый к человеческому." 
