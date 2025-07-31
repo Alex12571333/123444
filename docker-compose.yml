@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  telegram-rss-bot:
+    build: .
+    container_name: telegram-rss-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./articles.db:/app/articles.db
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge 
