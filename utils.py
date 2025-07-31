@@ -6,8 +6,15 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from newspaper import Article
+import asyncio
+import time
 
 logger = logging.getLogger(__name__)
+
+# Константы для retry логики
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # секунды
+RATE_LIMIT_DELAY = 10  # секунды при 429
 
 def try_get_hq_image(url):
     # Попытка получить ссылку на оригинал по шаблону
@@ -144,31 +151,61 @@ def extract_image_from_page(url, title=None):
     Ищет изображение только в основном контенте статьи (article, main, .content, .post, .entry, .article-body).
     Если title передан — ищет совпадения по alt/title картинки и словам из заголовка (длина слова > 3).
     """
-    try:
-        resp = requests.get(url, timeout=10)
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        # 1. Пробуем найти OpenGraph-изображение
-        og = soup.find('meta', property='og:image')
-        if og and og.get('content'):
-            return og['content']
-        # 2. Пробуем найти первую картинку в основном контенте, совпадающую по alt/title с заголовком
-        main_selectors = ['article', 'main', '.content', '.post', '.entry', '.article-body']
-        title_words = []
-        if title:
-            title_words = [w.lower() for w in re.findall(r'\w+', title) if len(w) > 3]
-        for selector in main_selectors:
-            main = soup.select_one(selector)
-            if main:
-                imgs = main.find_all('img')
-                for img in imgs:
-                    alt = img.get('alt', '').lower()
-                    t = img.get('title', '').lower()
-                    if title_words and any(word in alt or word in t for word in title_words):
-                        logger.info(f"Image alt/title matched: {img.get('src')} (alt: {alt}, title: {t})")
-                        return img.get('src')
-        logger.info(f"No image in main content matches title words: {title_words}")
-    except Exception as e:
-        logger.error(f"Error parsing HTML to find image: {e}")
+    for attempt in range(MAX_RETRIES):
+        try:
+            # Добавляем задержку между попытками
+            if attempt > 0:
+                time.sleep(RETRY_DELAY)
+            
+            resp = requests.get(url, timeout=10)
+            
+            # Обрабатываем 429 ошибку
+            if resp.status_code == 429:
+                logger.warning(f"Rate limited (429) for {url}, attempt {attempt + 1}/{MAX_RETRIES}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RATE_LIMIT_DELAY)
+                    continue
+                else:
+                    logger.error(f"Rate limit exceeded for {url} after {MAX_RETRIES} attempts")
+                    return None
+            
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            
+            # 1. Пробуем найти OpenGraph-изображение
+            og = soup.find('meta', property='og:image')
+            if og and og.get('content'):
+                return og['content']
+            
+            # 2. Пробуем найти первую картинку в основном контенте, совпадающую по alt/title с заголовком
+            main_selectors = ['article', 'main', '.content', '.post', '.entry', '.article-body']
+            title_words = []
+            if title:
+                title_words = [w.lower() for w in re.findall(r'\w+', title) if len(w) > 3]
+            
+            for selector in main_selectors:
+                main = soup.select_one(selector)
+                if main:
+                    imgs = main.find_all('img')
+                    for img in imgs:
+                        alt = img.get('alt', '').lower()
+                        t = img.get('title', '').lower()
+                        if title_words and any(word in alt or word in t for word in title_words):
+                            logger.info(f"Image alt/title matched: {img.get('src')} (alt: {alt}, title: {t})")
+                            return img.get('src')
+            
+            logger.info(f"No image in main content matches title words: {title_words}")
+            return None
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request error on attempt {attempt + 1} for {url}: {e}")
+            if attempt == MAX_RETRIES - 1:
+                return None
+        except Exception as e:
+            logger.error(f"Error parsing HTML to find image on attempt {attempt + 1} for {url}: {e}")
+            if attempt == MAX_RETRIES - 1:
+                return None
+    
     return None
 
 def extract_full_article_text(url):
@@ -176,14 +213,29 @@ def extract_full_article_text(url):
     Универсальный парсер: извлекает основной текст статьи по ссылке с помощью newspaper3k.
     Возвращает текст или пустую строку, если не удалось.
     """
-    try:
-        article = Article(url, language='ru')  # Можно попробовать 'en' для англоязычных
-        article.download()
-        article.parse()
-        text = article.text.strip()
-        if not text:
-            logger.warning(f"No text extracted from article: {url}")
-        return text
-    except Exception as e:
-        logger.error(f"Error extracting article text from {url}: {e}")
-        return "" 
+    for attempt in range(MAX_RETRIES):
+        try:
+            # Добавляем задержку между попытками
+            if attempt > 0:
+                time.sleep(RETRY_DELAY)
+            
+            article = Article(url, language='ru')  # Можно попробовать 'en' для англоязычных
+            article.download()
+            article.parse()
+            text = article.text.strip()
+            
+            if not text:
+                logger.warning(f"No text extracted from article on attempt {attempt + 1}: {url}")
+                if attempt < MAX_RETRIES - 1:
+                    continue
+                else:
+                    return ""
+            
+            return text
+            
+        except Exception as e:
+            logger.error(f"Error extracting article text from {url} on attempt {attempt + 1}: {e}")
+            if attempt == MAX_RETRIES - 1:
+                return ""
+    
+    return "" 
